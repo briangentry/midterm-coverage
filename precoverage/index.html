@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<script src="https://d3js.org/d3.v5.js"></script>
+	<script src="https://pittnews.com/wp-content/uploads/2018/09/responsive.js"></script>
+	<link rel="stylesheet" href="main.css">
+</head>
+<body>
+	<div class = "row-full">
+		<div class="map-container"></div><div class="race-info"></div>
+	</div>
+	<script>
+		// standard info
+		var w=900, h=900, p=40;
+		var svg=d3.select(".map-container")
+			.append("svg")
+			.attr("width",w)
+			.attr("height",h)
+			.call(responsivefy);
+
+		// functions from stackoverflow -- prevents clipping on paths
+		d3.selection.prototype.moveToFront = function() {  
+			return this.each(function(){
+				this.parentNode.appendChild(this);
+			});
+		};
+		d3.selection.prototype.moveToBack = function() {  
+	        return this.each(function() { 
+	            var firstChild = this.parentNode.firstChild; 
+	            if (firstChild) { 
+	                this.parentNode.insertBefore(this, firstChild); 
+	            } 
+	        });
+	    };
+	    // house districts in allegheny county
+		var ac_houses = [19,20,21,23,24,25,27,28,30,32,33,34,35,36,38,39,40,42,44,45,46,54]; // removed 16
+
+		// read in precoverage csv file
+		d3.csv("precoverage.csv").then(function(candidates) {
+			// make districts into integers
+			candidates.forEach(function(d) {
+				d.district = +d.district;
+			});
+			// draw the chart
+			draw_chart(candidates);
+		})
+
+		function draw_chart(candidates) {
+			// read in geojson info of each house
+			d3.json("cb_2017_42_sldl_500k.json").then(function(data) {
+				function update_info(district) {
+					empty_info();
+					var div = d3.select(".race-info");
+					candidate = candidates.filter(function(d) {
+						console.log(+district.properties.NAME == d.district)
+						return (+district.properties.NAME == d.district);
+					})[0];
+					div.append("h3")
+						.classed("district-name", true)
+						.html("Pennsylvania State House District " + (+district.properties.NAME));
+
+					determine_candidate_text(candidate, div);
+				}
+
+				function empty_info() {
+					var div = d3.select(".race-info");
+					div.selectAll("*").remove();
+				}
+
+				var features = data.features;
+				features = features.filter(function(feature) {
+					return (ac_houses.indexOf(+feature.properties.NAME) > -1);
+				});
+				data.features = features;
+				var projection = d3.geoMercator().fitSize([w - 2*p, h - 2*p], data);
+				var path = d3.geoPath().projection(projection);
+
+				
+				var g = svg.append("g")
+					.attr("class", "map-container");
+				g.append("rect")
+					.attr("x", 0)
+					.attr("y", 0)
+					.attr("width", w)
+					.attr("height", h)
+					.attr("class", "background-rect");
+				d3.json("roads.json").then(function(roads) {
+					g.append("g")
+						.attr("class", "road-container")
+						.attr("transform", "translate(" + p + "," + p + ")")
+						.selectAll("path")
+						.data(roads.features)
+						.enter()
+						.append("path")
+						.attr("d", path)
+						.attr("class", "road").moveToBack();
+				})
+				d3.json("rivers.json").then(function(rivers) {
+					g.append("g")
+						.attr("class", "rivers-container")
+						.attr("transform", "translate(" + p + ", " + p + ")")
+						.selectAll("path")
+						.data(rivers.features)
+						.enter()
+						.append("path")
+						.attr("d", path)
+						.attr("class", "rivers").moveToBack();
+				})
+				var clicked = false, clicked_border;
+				g.append("g")
+					.attr("class", "border-container")
+					.attr("transform", "translate(" + p + "," + p + ")")
+					.selectAll("path")
+					.data(features)
+					.enter()
+					.append("path")
+					.attr("d", path)
+					.attr("class", "border")
+					.attr("fill", "#FFFFFF")
+					.attr("stroke", "#000000")
+					.attr("stroke-width", "0.75")
+					.on("mouseover", function(d) {
+						if (!clicked) {
+							d3.select(this).moveToFront();
+							d3.select(this).attr("fill", "#d0e288")
+								.attr("stroke-width", "1px");
+							update_info(d);
+						}
+					})
+					.on("mouseout", function(d) {
+						if (!clicked) {
+							d3.select(this).moveToBack();
+							d3.select(this).attr("fill", "#FFFFFF")
+								.attr("stroke-width", "0.75px");
+							empty_info();
+						}
+					})
+					.on("click", function(d) {
+						var x, y, k;
+						if (!clicked) {
+							clicked_border = this;
+							clicked = !clicked;
+							var centroid = path.centroid(d);
+							x = centroid[0], y = centroid[1];
+							k = 2;
+							g.transition()
+								.duration(500)
+								.attr("transform", "translate(" + (w/2) + "," + (h/2) + ")scale(" + k + ")translate(" + (-x) + "," + (-y) + ")");
+						} else {
+							if (this == clicked_border) {
+								x = 0, y = 0;
+								k = 1;
+								clicked = !clicked;
+								g.transition()
+									.duration(500)
+									.attr("transform", "translate(" + 0 + "," + 0 + ")");
+							}
+						}
+					})
+					.moveToFront();
+			})
+		}
+
+		function determine_candidate_text(candidate, div) {
+			if (candidate.incumbent == "D") {
+				// democratic incumbent
+				if (candidate.rep == "" && candidate.independent == "") {
+					// unopposed incumbent democrat
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running unopposed.");
+				} else if (candidate.independent == "") {
+					// incumbent democrat against republican
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				} else if (candidate.rep == "") {
+					// incumbent democrat against independent party
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("ind-text", true)
+						.html(candidate.independent + " (" + candidate["independent party"] + ")");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				} else  {
+					// incumbent democrat against independent party and republican party
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" and ");
+					graf.append("span")
+						.classed("ind-text", true)
+						.html(candidate.independent + " (" + candidate["independent party"] + ")");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				}
+			} else if (candidate.incumbent == "R") {
+				// republican incumbent
+				if (candidate.dem == "" && candidate.independent == "") {
+					// unopposed incumbent republican
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running unopposed.");
+				} else if (candidate.independent == "") {
+					// incumbent republican against democrat
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				} else if (candidate.dem == "") {
+					// incumbent republican against independent party
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("ind-text", true)
+						.html(candidate.independent + " (" + candidate["independent party"] + ")");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				} else  {
+					// incumbent rep against dem party and independent party
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html("Incumbent ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" and ");
+					if (candidate["independent party"] == "R") {
+						graf.append("span")
+							.classed("rep-text", true)
+							.html(candidate.independent + " (" + candidate["independent party"] + ")");
+					} else {
+						graf.append("span")
+							.classed("ind-text", true)
+							.html(candidate.independent + " (" + candidate["independent party"] + ")");
+					}
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				}
+			} else {
+				if (candidate.rep == "" && candidate.independent == "") {
+					// no republican opposition
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running unopposed.");
+				} else {
+					// ASSUMES NO INDEPENDENT PARTY
+					var graf = div.append("p").attr("class", "candidate-info");
+					graf.append("span")
+						.classed("dem-text", true)
+						.html(candidate.dem + " (D)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(" is running against ");
+					graf.append("span")
+						.classed("rep-text", true)
+						.html(candidate.rep + " (R)");
+					graf.append("span")
+						.classed("blank-text", true)
+						.html(".");
+				}
+			}
+		}
+		
+	</script>
+</body>
+</html>
